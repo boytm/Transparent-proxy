@@ -94,8 +94,76 @@ class Relay(object):
             return
         self.local.read_bytes(65536, callback=self.on_local_read, partial=True)
 
+class TCPProxyHandler2(tornado.tcpserver.TCPServer):
+    #@gen.coroutine
+    def handle_stream(self, stream, address):
+
+        factory = tornado.tcpclient.TCPClient()
+        if stream.socket.family == socket.AF_INET:
+            #print stream.socket.getsockopt(socket.SOL_IP, socket.SO_ORIGINAL_DST, 16)
+            dst = stream.socket.getsockopt(socket.SOL_IP, 80, 16)
+            print struct.unpack('!2xH4s8x', dst)
+            srv_port, srv_ip = struct.unpack('!2xH4s8x', dst)
+            srv_ip = socket.inet_ntoa(srv_ip)
+            if cmp((srv_ip, srv_port), stream.socket.getsockname()) == 0:
+                print "error connect itself"
+                stream.close()
+                return
+            #remote = yield factory.connect(srv_ip, srv_port)
+            #Relay2(local, remote)
+            factory.connect(srv_ip, srv_port, callback=functools.partial(self.on_connect, stream))
+        else:
+            return
 
 
+    def on_connect(self, local, remote):
+        Relay2(local, remote)
+
+
+class Relay2(object):
+    def __init__(self, local, remote):
+        self.local = local
+        self.remote = remote
+
+        self.quit = False
+
+        self.local.set_nodelay(True)
+        self.remote.set_nodelay(True)
+
+        self.local.set_close_callback(self.on_local_close)
+        self.remote.set_close_callback(self.on_remote_close)
+
+        self.read_and_write(local, remote)
+        self.read_and_write(remote, local)
+
+
+    def on_local_close(self):
+        print 'detect local close'
+        self.quit = True
+        if self.local.error:
+            print self.local.error
+
+        if not self.remote.writing():
+            self.remote.close()
+
+    def on_remote_close(self):
+        print 'detect remote close'
+        self.quit = True
+        if self.remote.error:
+            print self.remote.error
+
+        if not self.local.writing():
+            self.local.close()
+
+    @gen.coroutine
+    def read_and_write(self, read_from, to):
+        while not self.quit:
+            try:
+                data = yield read_from.read_bytes(65536, partial=True)
+                yield to.write(data)
+            except Exception as e:
+                print "error %s, quit relay" % str(e)
+                break
 
 
 def main():
